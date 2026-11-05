@@ -1,0 +1,191 @@
+package com.kwadratowe.gildie;
+
+import org.bukkit.*;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
+import org.bukkit.command.CommandSender;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.plugin.java.JavaPlugin;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.*;
+
+public final class Main extends JavaPlugin implements CommandExecutor, Listener {
+
+    public static class Guild {
+        String name;
+        String tag;
+        String leader;
+        ChatColor color;
+        Location center;
+        Set<String> members = new HashSet<>();
+
+        public Guild(String name, String tag, String leader, ChatColor color, Location center) {
+            this.name = name;
+            this.tag = tag;
+            this.leader = leader;
+            this.color = color;
+            this.center = center;
+            this.members.add(leader);
+        }
+    }
+
+    private final Map<String, Guild> guilds = new HashMap<>();
+    private final Map<String, String> playerGuilds = new HashMap<>();
+    private final Map<String, String> invites = new HashMap<>();
+
+    private final List<ChatColor> availableColors = Arrays.asList(
+            ChatColor.RED, ChatColor.BLUE, ChatColor.GREEN, ChatColor.YELLOW,
+            ChatColor.GOLD, ChatColor.LIGHT_PURPLE, ChatColor.AQUA, ChatColor.DARK_PURPLE,
+            ChatColor.DARK_RED, ChatColor.DARK_BLUE, ChatColor.DARK_GREEN
+    );
+
+    private final int PROTECTION_RADIUS = 25;
+    private final int DIAMOND_COST = 5;
+
+    private File file;
+    private FileConfiguration config;
+
+    @Override
+    public void onEnable() {
+        getCommand("g").setExecutor(this);
+        getServer().getPluginManager().registerEvents(this, this);
+
+        createFile();
+        loadGuilds();
+
+        getLogger().info("KwadratoweGildie v3.0 z kolorami zostały włączone!");
+    }
+
+    @Override
+    public void onDisable() {
+        saveGuilds();
+        getLogger().info("KwadratoweGildie zostały wyłączone.");
+    }
+
+    private void createFile() {
+        file = new File(getDataFolder(), "gildie.yml");
+        if (!file.exists()) {
+            file.getParentFile().mkdirs();
+            try {
+                file.createNewFile();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        config = YamlConfiguration.loadConfiguration(file);
+    }
+
+    private void loadGuilds() {
+        if (!config.contains("guilds")) return;
+        ConfigurationSection section = config.getConfigurationSection("guilds");
+        for (String gName : section.getKeys(false)) {
+            String tag = section.getString(gName + ".tag", gName);
+            String leader = section.getString(gName + ".leader");
+            String colorName = section.getString(gName + ".color", "GREEN");
+            ChatColor color;
+            try {
+                color = ChatColor.valueOf(colorName);
+            } catch (Exception e) {
+                color = ChatColor.GREEN;
+            }
+            Location loc = section.getLocation(gName + ".center");
+            List<String> membersList = section.getStringList(gName + ".members");
+
+            Guild guild = new Guild(gName, tag, leader, color, loc);
+            guild.members.clear();
+            guild.members.addAll(membersList);
+
+            guilds.put(gName.toLowerCase(), guild);
+            for (String member : guild.members) {
+                playerGuilds.put(member.toLowerCase(), gName.toLowerCase());
+            }
+        }
+    }
+
+    private void saveGuilds() {
+        config.set("guilds", null);
+        for (Map.Entry<String, Guild> entry : guilds.entrySet()) {
+            String path = "guilds." + entry.getValue().name + ".";
+            config.set(path + "tag", entry.getValue().tag);
+            config.set(path + "leader", entry.getValue().leader);
+            config.set(path + "color", entry.getValue().color.name());
+            config.set(path + "center", entry.getValue().center);
+            config.set(path + "members", new ArrayList<>(entry.getValue().members));
+        }
+        try {
+            config.save(file);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage("Tę komendę mogą wykonać tylko gracze!");
+            return true;
+        }
+
+        Player player = (Player) sender;
+        String pName = player.getName();
+        String pLower = pName.toLowerCase();
+
+        if (args.length == 0) {
+            player.sendMessage(ChatColor.GOLD + "=== System Gildii (Kwadratowa Masakra) ===");
+            player.sendMessage(ChatColor.YELLOW + "/g zaloz <nazwa> <tag>" + ChatColor.WHITE + " - Tworzy gildię (Koszt: " + DIAMOND_COST + " diamentów)");
+            player.sendMessage(ChatColor.YELLOW + "/g zapros <gracz>" + ChatColor.WHITE + " - Zaprasza gracza do gildii");
+            player.sendMessage(ChatColor.YELLOW + "/g dolacz <nazwa>" + ChatColor.WHITE + " - Dołącza do gildii");
+            player.sendMessage(ChatColor.YELLOW + "/g wyrzuc <gracz>" + ChatColor.WHITE + " - Wyrzuca gracza z gildii");
+            player.sendMessage(ChatColor.YELLOW + "/g usun" + ChatColor.WHITE + " - Usuwa Twoją gildię");
+            player.sendMessage(ChatColor.YELLOW + "/g info" + ChatColor.WHITE + " - Informacje o Twojej gildii");
+            return true;
+        }
+
+        String sub = args[0].toLowerCase();
+
+        if (sub.equals("zaloz")) {
+            if (args.length < 3) {
+                player.sendMessage(ChatColor.RED + "Użycie: /g zaloz <nazwa> <tag>");
+                return true;
+            }
+            if (playerGuilds.containsKey(pLower)) {
+                player.sendMessage(ChatColor.RED + "Posiadasz już gildię!");
+                return true;
+            }
+
+            String gName = args[1];
+            String gTag = args[2];
+
+            if (gTag.length() > 5) {
+                player.sendMessage(ChatColor.RED + "Tag gildii może mieć maksymalnie 5 znaków!");
+                return true;
+            }
+
+            if (guilds.containsKey(gName.toLowerCase())) {
+                player.sendMessage(ChatColor.RED + "Gildia o takiej nazwie już istnieje!");
+                return true;
+            }
+
+            if (!player.getInventory().contains(Material.DIAMOND, DIAMOND_COST)) {
+                player.sendMessage(ChatColor.RED + "Potrzebujesz " + DIAMOND_COST + " diamentów!");
+                return true;
+            }
+
+            Location loc = player.getLocation();
+            for (Guild g : guilds.values()) {
+                if (g.center.getWorld().equals(loc.getWorld())) {
+                    if (g.center.distance(loc) < (PROTECTION_RADIUS * 2 + 10)) {
+                        player.sendMessage(ChatColor.RED + "Zbyt blisko bazy innej gildii!");
+                        return true;
+                    }
